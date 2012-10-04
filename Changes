@@ -1,0 +1,5 @@
+0.1  
+- first release
+
+0.2 
+- Performance enhancement. Now only one callback is called when coroutine destroyed no matter how much localized variables was in coroutine

@@ -3,8 +3,8 @@ use strict;
 no strict 'refs';
 use Guard;
 use Carp;
-use Scalar::Util qw/weaken/;
-our $VERSION = '0.1';
+use Scalar::Util qw/weaken blessed/;
+our $VERSION = '0.2';
 
 =head1 NAME
 
@@ -12,7 +12,7 @@ Coro::LocalScalar - local() for Coro
 
 =head1 ABOUT
 
-Perl local() function unuseful for Coro threads. This module uses tie magick to make scalar local for each Coro thread.
+Perl local() function unuseful for Coro threads. This module uses tie magick to make scalar local for each Coro thread. Unlike L<Coro::Specific> this module destroys all data attached to coroutine when coroutine gets destroyed. It's useful when you need to call destructors of coroutine local objects when coroutine destroyed. And you can easily localize value of hash with this module
 
 =head1 SYNOPSIS
 
@@ -23,6 +23,8 @@ Perl local() function unuseful for Coro threads. This module uses tie magick to 
 	my $scalar;
 	
 	Coro::LocalScalar->new->localize($scalar);
+	# or just
+	Coro::LocalScalar->new($scalar);
 	
 	async {
 		$scalar = "thread 1";
@@ -44,7 +46,10 @@ Perl local() function unuseful for Coro threads. This module uses tie magick to 
 	};
 	EV::loop;
 
+	
+
 prints
+
 	1 - thread 1
 	2 - thread 2
 	3 - thread 1
@@ -86,7 +91,6 @@ prints
 
 
 
-sub new { bless {} } 
 sub TIESCALAR {$_[1]};
 
 sub closure { 
@@ -98,14 +102,25 @@ sub closure {
 }
 
 sub localize { # tie scalar to container
-	my $self = shift;
+	my $self = $_[0];
 	
-	$self->{scalar} = \$_[0];
-	weaken $self->{scalar}; # no circular
+	unless( blessed $self){
+		$self = bless {};
+	}
 	
-	tie($_[0], __PACKAGE__, $self );
+	$self->{old_scalars_refs} = [] unless($self->{old_scalars_refs});
+	
+	if(exists $_[1]){
+		tie($_[1], __PACKAGE__, $self ) unless tied($_[1]);
+		
+		push @{ $self->{old_scalars_refs} } , \$_[1];
+		weaken @{ $self->{old_scalars_refs} }[ int(@{ $self->{old_scalars_refs} })-1 ];
+	}
+	
 	$self;
 }
+*new = *localize;
+
 
 sub attach { # attach setter/getter and tied hash element to class
 	# $container->attach($comeobj, 'db_conn'); $comeobj->{db_conn} and $comeobj->db_conn now local in Coros
@@ -118,39 +133,30 @@ sub attach { # attach setter/getter and tied hash element to class
 }
 
 
-
-
 sub _proto : lvalue {
 	my $self = shift;
 	
-	unless(exists($self->{$Coro::current})){
-		my $coro = $Coro::current;
+	unless($Coro::current->{_CLS_ondestroy_set}){
+		$Coro::current->{_CLS_ondestroy_set} = 1;
 		
-		$self->{$coro} = undef;
-		
-		# init coro data destructor
-			$coro->on_destroy(sub {
-				
-				${ $self->{scalar} } = undef; # Delete scalar value to prevent unexpected behavior
-				#perl stores values in scalar even if it tied. When Coro::LocalScalar destroys internal value, value stored in scalar still persists although you expected that it would be deleted( and DESTROY called if it`s object)
-				
-				delete $self->{$coro};
-				undef $coro; 
-			});
-		
-	};
-	if(@_){ $self->{$Coro::current} = shift }
+		$Coro::current->on_destroy(sub {
+				${$_} = undef for(@{ $self->{old_scalars_refs} }); # Delete scalar value to prevent unexpected behavior
+				# perl stores values in scalar even if it tied. When Coro::LocalScalar destroys internal value, value stored in scalar still persists although you expected that it would be deleted( and DESTROY called if it`s object)
+		});
+	}
 	
-	$self->{$Coro::current};
+	if(@_){ $Coro::current->{_CLS_data}{$self} = $_[0] }
+	
+	$Coro::current->{_CLS_data}{$self};
 }
 
 *STORE = *_proto;
 
-sub FETCH : lvalue { shift->{$Coro::current} };
+sub FETCH : lvalue { $Coro::current->{_CLS_data}{$_[0]} };
 
 
 our $AUTOLOAD;
-sub AUTOLOAD :lvalue { *{$AUTOLOAD} = *_proto; shift->_proto }
+sub AUTOLOAD :lvalue { *{$AUTOLOAD} = *_proto; $_[0]->_proto }
 
 sub DESTROY {}
 sub UNTIE {};
