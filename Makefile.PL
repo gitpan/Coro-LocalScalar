@@ -2,7 +2,7 @@ use ExtUtils::MakeMaker;
 my %options = (
   'TYPEMAPS' => [],
   'NAME' => 'Coro::LocalScalar',
-  'VERSION' => '0.2',
+  'VERSION' => '0.21',
   'BUILD_REQUIRES' => { 
 	'Coro'  		=> 0,
 	'Scalar::Util'	=> 0,
